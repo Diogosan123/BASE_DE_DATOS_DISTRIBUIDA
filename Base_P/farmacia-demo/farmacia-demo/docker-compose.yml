@@ -1,0 +1,126 @@
+version: "3.9"
+
+services:
+
+  # ── BROKER DE MENSAJES ──────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: farmacia_rabbitmq
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Panel web
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── BASE DE DATOS DE INVENTARIO (PostgreSQL) ────────────────────
+  inventory-db:
+    image: postgres:16
+    container_name: farmacia_inventory_db
+    environment:
+      POSTGRES_DB: inventario
+      POSTGRES_USER: inv_user
+      POSTGRES_PASSWORD: inv_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - inventory_data:/var/lib/postgresql/data
+      - ./inventory-service/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inv_user -d inventario"]
+      interval: 5s
+      retries: 10
+
+  # ── BASE DE DATOS DE VENTAS (MongoDB) ──────────────────────────
+  sales-db:
+    image: mongo:7
+    container_name: farmacia_sales_db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: sales_user
+      MONGO_INITDB_ROOT_PASSWORD: sales_pass
+      MONGO_INITDB_DATABASE: ventas
+    ports:
+      - "27017:27017"
+    volumes:
+      - sales_data:/data/db
+
+  # ── BASE DE DATOS DE AUDITORÍA (PostgreSQL) ─────────────────────
+  audit-db:
+    image: postgres:16
+    container_name: farmacia_audit_db
+    environment:
+      POSTGRES_DB: auditoria
+      POSTGRES_USER: audit_user
+      POSTGRES_PASSWORD: audit_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - audit_data:/var/lib/postgresql/data
+      - ./audit-service/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit_user -d auditoria"]
+      interval: 5s
+      retries: 10
+
+  # ── SERVICIO DE INVENTARIO ──────────────────────────────────────
+  inventory-service:
+    build: ./inventory-service
+    container_name: farmacia_inventory
+    ports:
+      - "8001:8001"
+    environment:
+      DB_HOST: inventory-db
+      DB_PORT: 5432
+      DB_NAME: inventario
+      DB_USER: inv_user
+      DB_PASS: inv_pass
+      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      inventory-db:
+        condition: service_healthy
+
+  # ── SERVICIO DE VENTAS ──────────────────────────────────────────
+  sales-service:
+    build: ./sales-service
+    container_name: farmacia_sales
+    ports:
+      - "8002:8002"
+    environment:
+      MONGO_URL: mongodb://sales_user:sales_pass@sales-db:27017/ventas?authSource=admin
+      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      sales-db:
+        condition: service_started
+
+  # ── SERVICIO DE AUDITORÍA ───────────────────────────────────────
+  audit-service:
+    build: ./audit-service
+    container_name: farmacia_audit
+    ports:
+      - "8003:8003"
+    environment:
+      DB_HOST: audit-db
+      DB_PORT: 5432
+      DB_NAME: auditoria
+      DB_USER: audit_user
+      DB_PASS: audit_pass
+      RABBITMQ_URL: amqp://admin:admin123@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      audit-db:
+        condition: service_healthy
+
+volumes:
+  inventory_data:
+  sales_data:
+  audit_data:
